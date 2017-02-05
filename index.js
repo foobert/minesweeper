@@ -4,260 +4,227 @@ var cnnutil = require('convnetjs/build/util');
 global.convnetjs = convnetjs;
 global.cnnutil = cnnutil;
 var deepqlearn = require('convnetjs/build/deepqlearn');
-/*
 
-var layer_defs = [];
-layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:2});
-layer_defs.push({type:'fc', num_neurons:5, activation:'sigmoid'});
-layer_defs.push({type:'regression', num_neurons:1});
-var net = new convnetjs.Net();
-net.makeLayers(layer_defs);
- 
-var x = new convnetjs.Vol([0.5, -1.3]);
- 
-// train on this datapoint, saying [0.5, -1.3] should map to value 0.7:
-// note that in this case we are passing it a list, because in general
-// we may want to  regress multiple outputs and in this special case we 
-// used num_neurons:1 for the regression to only regress one.
-var trainer = new convnetjs.SGDTrainer(net, 
-              {learning_rate:0.01, momentum:0.0, batch_size:1, l2_decay:0.001});
-trainer.train(x, [0.7]);
- 
-// evaluate on a datapoint. We will get a 1x1x1 Vol back, so we get the
-// actual output by looking into its 'w' field:
-var predicted_values = net.forward(x);
-console.log('predicted value: ' + predicted_values.w[0]);
-*/
+class Brain {
+    constructor(width, height) {
+        const num_inputs = width * height;
+        const num_actions = num_inputs; // can click on each field
+        const temporal_window = 0; // no history needed (?)
+        const network_size = num_inputs*temporal_window + num_actions*temporal_window + num_inputs;
 
-function rand(min, max) {
-  return Math.floor(Math.random() * (max - min) + min);
-}
+        let layer_defs = [];
+        layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:network_size});
+        layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
+        layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
+        layer_defs.push({type:'regression', num_neurons:num_actions});
 
-function count(minefield, x, y) {
-    let mines = 0;
-    for (var i = Math.max(0, x - 1); i < Math.min(minefield.length, x + 2); i++) {
-        for (var j = Math.max(0, y - 1); j < Math.min(minefield[i].length, y + 2); j++) {
-            if (minefield[i][j]) {
-                mines++;
-            }
-        }
+        const tdtrainer_options = {learning_rate:0.001, momentum:0.0, batch_size:64, l2_decay:0.01};
+
+        let opt = {};
+        opt.temporal_window = 0;
+        opt.experience_size = 30000;
+        opt.start_learn_threshold = 1000;
+        opt.gamma = 0.7;
+        opt.learning_steps_total = 200000;
+        opt.learning_steps_burnin = 3000;
+        opt.epsilon_min = 0.05;
+        opt.epsilon_test_time = 0.05;
+        opt.layer_defs = layer_defs;
+        opt.tdtrainer_options = tdtrainer_options;
+
+        this.brain = new deepqlearn.Brain(num_inputs, num_actions);
     }
-    return mines;
-}
 
-function createMinefield(size_x, size_y) {
-    let mine_count = rand(2, 4);
-    let minefield = [];
-
-    for (var i = 0; i < size_x; i++) {
-        minefield[i] = [];
-        for (var j = 0; j < size_y; j++) {
-            minefield[i][j] = false;
+    load() {
+        if (fs.exists('brain.json')) {
+            this.brain.value_net.fromJSON(JSON.parse(fs.readFileSync('brain.json')));
         }
     }
 
-    while (mine_count > 0) {
-        let mine_x = rand(0, size_x);
-        let mine_y = rand(0, size_y);
-        if (!minefield[mine_x][mine_y]) {
-            minefield[mine_x][mine_y] = true;
-            mine_count--;
+    save() {
+        fs.writeFileSync('brain.json', JSON.stringify(this.brain.value_net.toJSON()));
+    }
+
+    play(cf) {
+        let action = this.brain.forward(cf.field);
+        let result = cf.click(action);
+        if (result === false) {
+            // boom
+            this.brain.backward(-10);
+        } else {
+            this.brain.backward(result);
         }
     }
 
-    return minefield;
+    playLoop(cf) {
+        while (cf.result === null) {
+            this.play(cf);
+        }
+        return cf.result;
+    }
 }
 
-function createCountField(minefield) {
-    let countfield = [];
-    for (var i = 0; i < minefield.length; i++) {
-        countfield[i] = [];
-        let col = minefield[i];
-        for (var j = 0; j < col.length; j++) {
-            let c = count(minefield, i, j);
-            countfield[i][j] = c;
+class Field {
+    constructor(width, height) {
+        this.arr = [];
+        this.width = width;
+        this.height = height;
+        for (var i = 0; i < width * height; i++) {
+            this.arr.push(null);
         }
     }
-    return countfield;
-}
 
-function drawMinefield(minefield) {
-    for (var i = 0; i < minefield.length; i++) {
-        var col = minefield[i];
-        console.log(col.map(row => row ? 'x' : '.').join(''));
-    }
-}
-
-function drawCountfield(countfield) {
-    for (var i = 0; i < countfield.length; i++) {
-        var col = countfield[i];
-        console.log(col.map(r => r !== null ? r : '.').join(''));
-    }
-}
-
-function neighbors(minefield, x, y, f) {
-    for (var i = Math.max(0, x - 1); i < Math.min(minefield.length, x + 2); i++) {
-        for (var j = Math.max(0, y - 1); j < Math.min(minefield[i].length, y + 2); j++) {
-            f(i, j);
-        }
-    }
-}
-
-function field(minefield, f) {
-    for (var i = 0; i < minefield.length; i++) {
-        for (var j = 0; j < minefield[i].length; j++) {
-            f(i, j, minefield[i][j]);
-        }
-    }
-}
-
-function initCountfield(minefield) {
-    return minefield.map(col => col.map(() => null));
-}
-
-function simClick(minefield, countfield, x, y) {
-    if (minefield[x][y]) {
-        throw "boom";
+    index(x, y) {
+        return x + y * this.width;
     }
 
-    let queue = [[x, y]];
-
-    while (queue.length > 0) {
-        let [i, j] = queue.pop();
-
-        if (countfield[i][j] !== null) {
-            //console.log('already know ' + i + ', ' + j);
-            continue;
-        }
-
-        let c = count(minefield, i, j);
-        //console.log('count of ' + i + ', ' + j + ': ' + c);
-
-        if (c === 0) {
-            // need to potentially reveal all other 8 fields around us
-            neighbors(minefield, i, j, (a, b) => queue.push([a, b]));
-        }
-
-        countfield[i][j] = c;
+    value(x, y) {
+        return valueIndex(this.index(x, y));
     }
 
-    return countfield;
-}
-
-function isDone(minefield, countfield) {
-    // we're done when there is less or equal unclicked fields than there is
-    // mines
-    let mines = 0;
-    field(minefield, (i, j, m) => { if (m) { mines++; } });
-
-    let unclicked = 0;
-    field(countfield, (i, j, m) => { if (m === null) { unclicked++; } });
-
-    return unclicked <= mines;
-}
-
-function flatten(field) {
-    return field.reduce((s, col) => s.concat(col), []);
-}
-
-var num_inputs = 25; // 9 eyes, each sees 3 numbers (wall, green, red thing proximity)
-var num_actions = 25; // 5 possible angles agent can turn
-var temporal_window = 0; // amount of temporal memory. 0 = agent lives in-the-moment :)
-var network_size = num_inputs*temporal_window + num_actions*temporal_window + num_inputs;
-
-var layer_defs = [];
-layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:network_size});
-layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
-layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
-layer_defs.push({type:'regression', num_neurons:num_actions});
-
-var tdtrainer_options = {learning_rate:0.001, momentum:0.0, batch_size:64, l2_decay:0.01};
-
-var opt = {};
-opt.temporal_window = 0;
-opt.experience_size = 30000;
-opt.start_learn_threshold = 1000;
-opt.gamma = 0.7;
-opt.learning_steps_total = 200000;
-opt.learning_steps_burnin = 3000;
-opt.epsilon_min = 0.05;
-opt.epsilon_test_time = 0.05;
-opt.layer_defs = layer_defs;
-opt.tdtrainer_options = tdtrainer_options;
-
-let brain = new deepqlearn.Brain(25, 25);
-
-if (fs.exists('brain.json')) {
-    brain.value_net.fromJSON(JSON.parse(fs.readFileSync('brain.json')));
-}
-
-let won = 0;
-let lost = 0;
-
-for (var i = 0; i < 100; i++) {
-    if (i % 100 === 0) {
-        console.log('iter: ' + i + ', won: ' + won + ', lost: ' + lost);
+    valueIndex(index) {
+        return this.arr[index];
     }
-    try {
-        let mf = createMinefield(5, 5);
-        let cf = initCountfield(mf);
-        //drawMinefield(mf);
-        //drawCountfield(cf);
 
-        while (true) {
-            let action = brain.forward(flatten(cf));
+    update(x, y, v) {
+        return this.updateIndex(this.index(x, y), v);
+    }
 
-            //console.log(action);
-            let row = Math.floor(action / mf.length);
-            let col = action - row * mf.length;
-            //console.log(row, col);
-            if (cf[row][col] !== null) {
-                brain.backward(-1);
-            } else {
-                cf = simClick(mf, cf, row, col);
-                //drawCountfield(cf);
-                brain.backward(1);
-                if (isDone(mf, cf)) {
-                    //console.log('won :-)');
-                    brain.backward(10);
-                    won++;
-                    break;
+    updateIndex(index, v) {
+        const prev = this.arr[index];
+        this.arr[index] = v;
+        return prev;
+    }
+
+    randomIndex() {
+      return Math.floor(Math.random() * this.arr.length);
+    }
+
+    neighbors(index) {
+        let x = index % this.width;
+        let y = (index - x) / this.width;
+        let neighbors = [];
+        for (var i = Math.max(0, x - 1); i < Math.min(this.width, x + 2); i++) {
+            for (var j = Math.max(0, y - 1); j < Math.min(this.height, y + 2); j++) {
+                let idx = this.index(i, j);
+                if (idx !== index) {
+                    neighbors.push(idx);
                 }
             }
         }
-    } catch (e) {
-        //console.log('lost :-(');
-        lost++;
-        brain.backward(-10);
+        return neighbors;
+    }
+
+    print(f) {
+        for (var r = 0; r < this.height; r++) {
+            let row = this.arr.slice(r * this.width, (r + 1) * this.width);
+            let line = row.map((value, col) => f(value, r * this.width + col)).join('');
+            console.log(line);
+        }
     }
 }
-console.log('won: ' + won);
-console.log('lost: ' + lost);
 
-fs.writeFileSync('brain.json', JSON.stringify(brain.value_net.toJSON()));
+class Minefield {
+    constructor(width, height, mines) {
+        this.field = new Field(width, height);
+        while (mines > 0) {
+            const prev = this.field.updateIndex(this.field.randomIndex(), true);
+            if (!prev) { mines--; }
+        }
+    }
 
-let mf = createMinefield(5, 5);
-let cf = initCountfield(mf);
-drawMinefield(mf);
+    get width() { return this.field.width; }
+    get height() { return this.field.height; }
 
-try {
-    while (true) {
-        console.log('');
-        drawCountfield(cf);
-        let action = brain.forward(flatten(cf));
+    count(index) {
+        return [index].concat(this.field.neighbors(index)).map(i => this.field.valueIndex(i) ? 1 : 0).reduce((s, x) => s + x, 0);
+    }
 
-        let row = Math.floor(action / mf.length);
-        let col = action - row * mf.length;
-        console.log('click on ' + row + ', ' + col);
+    print() {
+        this.field.print(x => x ? 'x' : '.');
+    }
+}
 
-        cf = simClick(mf, cf, row, col);
-        if (isDone(mf, cf)) {
-            console.log('done');
-            break;
+class Countfield {
+    constructor(minefield) {
+        this.minefield = minefield;
+        this.field = new Field(minefield.width, minefield.height);
+        this.gameover = false;
+    }
+
+    click(index) {
+        if (this.field.valueIndex(index) !== null) {
+            // already known field
+            return 0;
         }
 
+        if (this.minefield.field.valueIndex(index)) {
+            // mine
+            this.gameover = true;
+            return false;
+        }
+
+        // new field, without mine, reveal field
+        let queue = [index];
+        let revealed = 0;
+        while (queue.length > 0) {
+            let i = queue.pop();
+            if (this.field.valueIndex(i) !== null) {
+                continue;
+            }
+
+            let count = this.minefield.count(i);
+            if (count === 0) {
+                // need to potentially reveal all other 8 fields around us
+                queue = queue.concat(this.field.neighbors(i));
+            }
+            this.field.updateIndex(i, count);
+            revealed++;
+        }
+
+        return revealed;
     }
-} catch (e) {
-    drawMinefield(cf);
-    console.log('boom');
+
+    print() {
+        this.field.print((x, i) => {
+            if (this.minefield.field.valueIndex(i)) {
+                return 'x';
+            }
+            return x !== null ? x : '.'
+        });
+    }
+
+    get done() {
+        const hidden = this.field.arr.filter(x => x === null).length;
+        const mines = this.minefield.field.arr.filter(x => x).length;
+        return hidden <= mines;
+    }
+
+    get result() {
+        if (this.gameover) {
+            return false;
+        }
+        if (this.done) {
+            return true;
+        }
+        return null;
+    }
 }
+
+let br = new Brain(9, 9);
+br.load();
+
+for (var i = 0; i < 100; i++) {
+    let mf = new Minefield(9, 9, 10);
+    let cf = new Countfield(mf);
+
+    console.log(br.playLoop(cf));
+}
+
+br.save();
+
+let mf = new Minefield(9, 9, 10);
+let cf = new Countfield(mf);
+br.playLoop(cf);
+cf.print();
+console.log(cf.result);
