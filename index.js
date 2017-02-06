@@ -47,12 +47,16 @@ class Brain {
 
     play(cf) {
         let action = this.brain.forward(cf.field);
+        let xy = cf.field.reverseIndex(action);
         let result = cf.click(action);
         if (result === false) {
             // boom
             this.brain.backward(-10);
+        } else if (result === 0) {
+            // punish no-ops
+            this.brain.backward(-1);
         } else {
-            this.brain.backward(result);
+            this.brain.backward(1);
         }
     }
 
@@ -100,9 +104,14 @@ class Field {
       return Math.floor(Math.random() * this.arr.length);
     }
 
-    neighbors(index) {
+    reverseIndex(index) {
         let x = index % this.width;
         let y = (index - x) / this.width;
+        return [x, y];
+    }
+
+    neighbors(index) {
+        let [x, y] = this.reverseIndex(index);
         let neighbors = [];
         for (var i = Math.max(0, x - 1); i < Math.min(this.width, x + 2); i++) {
             for (var j = Math.max(0, y - 1); j < Math.min(this.height, y + 2); j++) {
