@@ -10,13 +10,16 @@ var deepqlearn = require('convnetjs/build/deepqlearn');
 class Brain {
     constructor(width, height) {
         const num_inputs = width * height;
-        const num_actions = num_inputs; // can click on each field
+        const num_actions = num_inputs + 0; // can click on each field and do nothing
         const temporal_window = 0; // no history needed (?)
         const network_size = num_inputs*temporal_window + num_actions*temporal_window + num_inputs;
 
         let layer_defs = [];
-        layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:num_inputs});
+        layer_defs.push({type:'input', out_sx:width, out_sy:height, out_depth:1});
         //layer_defs.push({type:'conv', sx:3, filters:8, stride:1, activation:'relu'});
+        //layer_defs.push({type:'pool', sx:3, stride:2});
+        //layer_defs.push({type:'conv', sx:3, filters:8, stride:1, activation:'relu'});
+        //layer_defs.push({type:'pool', sx:3, stride:2});
         layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
         layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
         layer_defs.push({type:'regression', num_neurons:num_actions});
@@ -28,14 +31,15 @@ class Brain {
         opt.experience_size = 30000;
         opt.start_learn_threshold = 1000;
         opt.gamma = 0.7;
-        opt.learning_steps_total = 200000;
-        opt.learning_steps_burnin = 3000;
+        opt.learning_steps_total = 100000;
+        opt.learning_steps_burnin = 2000;
         opt.epsilon_min = 0.05;
         opt.epsilon_test_time = 0.05;
         opt.layer_defs = layer_defs;
         opt.tdtrainer_options = tdtrainer_options;
 
         this.brain = new deepqlearn.Brain(num_inputs, num_actions, opt);
+        this.noop = num_actions - 1;
     }
 
     load() {
@@ -49,8 +53,19 @@ class Brain {
     }
 
     play(cf) {
-        let input = cf.field.arr.map(x => x === null ? -1 : x);
+        let v = new convnetjs.Vol(cf.field.width, cf.field.height, 1, 0.0);
+        let input = cf.field.arr.map(x => x === null ? -1 : x).map(v => (v + 1) / 4);
+        v.w = input;
         let action = this.brain.forward(input);
+        /*
+        if (action === this.noop) {
+            // choosen no-op
+            console.log('noop');
+            this.brain.backward(0);
+            return action;
+        }
+        */
+
         let [x, y] = cf.field.reverseIndex(action);
         let result = cf.click(action);
         if (result === false) {
@@ -58,7 +73,7 @@ class Brain {
             this.brain.backward(-1);
         } else if (result === 0) {
             // punish no-ops
-            this.brain.backward(0);
+            this.brain.backward(-1);
         } else {
             this.brain.backward(1);
         }
@@ -296,12 +311,12 @@ class Screen {
 
 var reward_graph = new cnnvis.Graph();
 let draw_stats = () => {
+    var b = br.brain;
     var canvas = document.getElementById("vis_canvas");
     var ctx = canvas.getContext("2d");
     var W = canvas.width;
     var H = canvas.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    var b = br.brain;
     var netin = b.last_input_array;
     ctx.strokeStyle = "rgb(0,0,0)";
     //ctx.font="12px Verdana";
@@ -314,11 +329,11 @@ let draw_stats = () => {
     }
     ctx.stroke();
 
-    //if(clock % 2 === 0) {
-        reward_graph.add(clock/200, b.average_reward_window.get_average());
+    if(clock % 100 === 0) {
+        reward_graph.add(clock/100, b.average_reward_window.get_average());
         var gcanvas = document.getElementById("graph_canvas");
         reward_graph.drawSelf(gcanvas);
-    //}
+    }
 }
 
 let draw_net = () => {
@@ -342,7 +357,7 @@ let draw_net = () => {
         ctx.fillStyle = "rgb(0,0,0)";
         ctx.fillText(L[k].layer_type + "(" + n + ")", x, 35);
         for(var q=0;q<n;q++) {
-            var v = Math.floor(kw[q]*100);
+            var v = Math.floor(kw[q]*255);
             if(v >= 0) ctx.fillStyle = "rgb(0,0," + v + ")";
             if(v < 0) ctx.fillStyle = "rgb(" + (-v) + ",0,0)";
             ctx.fillRect(x,y,10,10);
@@ -366,16 +381,20 @@ setInterval(() => {
     clock++;
     if (cf.result === null) {
         let action = br.play(cf);
+        if (br.brain.epsilon < 1) {
         sc.draw(cf);
         sc.drawAction(cf, action);
         draw_stats();
         draw_net();
+        }
+        document.getElementById("epsilon").innerText = br.brain.epsilon;
     } else {
-        console.log(cf.result ? 'won' : 'lost');
+        //console.log(cf.result ? 'won' : 'lost');
+        if (cf.result) { console.log('won ', clock); }
         mf = new Minefield(9, 9, 10);
         cf = new Countfield(mf);
     }
-}, 10);
+}, 0);
 
 document.getElementById('step').onclick = () => {
     let action = br.play(cf);
